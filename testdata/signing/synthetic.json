@@ -1,0 +1,29 @@
+{
+  "command": "printf '%s' \"$CANON\" | openssl dgst -sha256 -mac HMAC -macopt hexkey:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "reason": "hexkey preserves the NUL byte in the required 00..1f test key; -hmac arguments cannot contain NUL bytes",
+  "vectors": [
+    {
+      "name": "empty",
+      "rawQuery": "",
+      "canonical": "GET\n2026-01-02T03:04:05+0000\ntest-key-id\nHmacSHA256\n/api/marketplaces/AE08WJ6YKNBMC/products/B0H471LF7H\n\naccept:application/json\nz-header: padded \naccept;z-header",
+      "hex": "a066ba074b09ca18b95b2f84eebcb281621a658a9bcc29847410c321f29ba3e8"
+    },
+    {
+      "name": "sorted",
+      "rawQuery": "b=2&a=1&a=0&k=a b",
+      "canonical": "GET\n2026-01-02T03:04:05+0000\ntest-key-id\nHmacSHA256\n/api/marketplaces/AE08WJ6YKNBMC/products/B0H471LF7H\na=0&a=1&b=2&k=a+b\naccept:application/json\nz-header: padded \naccept;z-header",
+      "hex": "de51d992c7e331f316c6dd14fa4896c602ee19766e27178a017e24e6a6ded953"
+    },
+    {
+      "name": "java_encoding",
+      "rawQuery": "k=~*+%2B",
+      "canonical": "GET\n2026-01-02T03:04:05+0000\ntest-key-id\nHmacSHA256\n/api/marketplaces/AE08WJ6YKNBMC/products/B0H471LF7H\nk=%7E*+%2B\naccept:application/json\nz-header: padded \naccept;z-header",
+      "hex": "112a389f20b11fb176f71e546c1117458a585510a7d3610346073d50d7795a33"
+    }
+  ],
+  "asciiVector": {
+    "command": "printf '%s' \"$CANON\" | openssl dgst -sha256 -hmac test-secret",
+    "canonical": "GET\n2026-01-02T03:04:05+0000\ntest-key-id\nHmacSHA256\n/\n\naccept:application/json\naccept",
+    "hex": "7d66f58c89fa25eeb3635d029b3ce255e682636fd46b7111e56613a07b5b67c8"
+  }
+}
