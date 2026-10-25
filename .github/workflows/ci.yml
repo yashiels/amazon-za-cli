@@ -15,10 +15,14 @@ jobs:
   checks:
     name: Test, lint and build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+      - name: Set up actionlint
+        run: scripts/install-actionlint.sh
+      - name: Lint workflows
+        run: actionlint
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -32,3 +36,5 @@ jobs:
           version: v2.15.0
       - name: Build
         run: make build
+      - name: Test release tooling
+        run: python3 scripts/release_test.py
