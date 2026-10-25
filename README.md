@@ -10,7 +10,7 @@ Not affiliated with Amazon. Uses private, undocumented APIs reverse-engineered f
 brew install yashiels/tap/amazon
 ```
 
-The Homebrew formula is published separately. To build from source, use Go 1.23 or newer:
+The Homebrew formula is published from the GitHub release by the tap workflow in [Release](#release). To build from source, use Go 1.23 or newer:
 
 ```sh
 make build
@@ -98,4 +98,28 @@ make build
 
 Tests use captured catalogue fixtures and local HTTP servers. The signer includes independent OpenSSL vectors, an accepted-live signature vector and a literal-comma wire test. When golangci-lint v2 is unavailable, `make lint` runs gofmt checks and `go vet`.
 
-The approved specification is in [docs/plan.md](docs/plan.md). The bundled agent skill is [skill/SKILL.md](skill/SKILL.md). Release automation and the Homebrew formula are maintained separately.
+The approved specification is in [docs/plan.md](docs/plan.md). The bundled agent skill is [skill/SKILL.md](skill/SKILL.md).
+
+## Release
+
+Releases are manual. `ship.yml` runs only from `main` through `workflow_dispatch`. Push and tag events do not publish. The `version` input is the binary identity passed to the linker. The workflow does not edit or commit `version.env`.
+
+A dry run is the default. It tests, builds the four static archives, and uploads them with `checksums.txt` as a workflow artifact. It does not create a tag or GitHub release.
+
+```sh
+gh workflow run ship.yml --ref main -f version=0.1.0 -f dry_run=true
+```
+
+Publishing requires `dry_run=false`. That creates tag `vX.Y.Z` and a GitHub release for the workflow's source SHA. An existing tag or release stops the job before it changes either one.
+
+```sh
+gh workflow run ship.yml --ref main -f version=0.1.0 -f dry_run=false
+```
+
+Assets are `amazon_<version>_darwin_arm64.tar.gz`, `amazon_<version>_darwin_amd64.tar.gz`, `amazon_<version>_linux_arm64.tar.gz`, `amazon_<version>_linux_amd64.tar.gz`, and `checksums.txt`. Each archive contains only the `amazon` binary.
+
+This repository's `GITHUB_TOKEN` cannot update `yashiels/homebrew-tap`. After the release exists, dispatch the tap's formula workflow with a new `request_id`:
+
+```sh
+gh workflow run update-formula.yml --repo yashiels/homebrew-tap --ref main -f formula=amazon -f tag=v0.1.0 -f repository=yashiels/amazon-za-cli -f description='Read-only Amazon South Africa shopping CLI' -f artifact_template='amazon_{version}_{target}.tar.gz' -f request_id=UNIQUE_ID
+```

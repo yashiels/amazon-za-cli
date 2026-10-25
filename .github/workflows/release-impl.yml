@@ -1,0 +1,215 @@
+name: "Internal: Binary Release (reusable)"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Semantic version X.Y.Z without a leading v
+        required: true
+        type: string
+      dry_run:
+        description: Skip GitHub release publication
+        required: true
+        type: boolean
+      source_sha:
+        description: Immutable commit SHA to build and tag
+        required: true
+        type: string
+    outputs:
+      tag:
+        description: Tag reported by GitHub after publication
+        value: ${{ jobs.publish.outputs.tag }}
+      release_url:
+        description: Release URL reported by GitHub after publication
+        value: ${{ jobs.publish.outputs.release_url }}
+      asset_count:
+        description: Asset count reported by GitHub after publication
+        value: ${{ jobs.publish.outputs.asset_count }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Test and build assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Validate release inputs
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          if ! printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid version" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "invalid source SHA" >&2
+            exit 1
+          fi
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Require exact main commit
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+      - name: Set up actionlint
+        run: scripts/install-actionlint.sh
+      - name: Lint workflows
+        run: actionlint
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.2"
+          cache: true
+      - name: Test
+        run: TZ=UTC go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Check gofmt
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted" >&2
+            exit 1
+          fi
+      - name: Build release assets
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/build-release.sh "$RELEASE_VERSION" "${RUNNER_TEMP}/amazon-release"
+      - name: List release assets
+        run: |
+          set -euo pipefail
+          find "${RUNNER_TEMP}/amazon-release" -type f -print | LC_ALL=C sort
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/amazon-release/*.tar.gz
+            ${{ runner.temp }}/amazon-release/checksums.txt
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    if: ${{ inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      release_url: ${{ steps.release.outputs.release_url }}
+      asset_count: ${{ steps.release.outputs.asset_count }}
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Publish GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          case "$DRY_RUN" in
+            false) ;;
+            *)
+              echo "refusing to publish unless dry_run is false" >&2
+              exit 1
+              ;;
+          esac
+          if ! printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "invalid version" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "invalid source SHA" >&2
+            exit 1
+          fi
+          tag="v${RELEASE_VERSION}"
+          assets="release-assets"
+          files=(
+            "${assets}/amazon_${RELEASE_VERSION}_darwin_amd64.tar.gz"
+            "${assets}/amazon_${RELEASE_VERSION}_darwin_arm64.tar.gz"
+            "${assets}/amazon_${RELEASE_VERSION}_linux_amd64.tar.gz"
+            "${assets}/amazon_${RELEASE_VERSION}_linux_arm64.tar.gz"
+            "${assets}/checksums.txt"
+          )
+          for file in "${files[@]}"; do
+            test -s "$file"
+          done
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "refusing existing tag ${tag}" >&2
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing existing release ${tag}" >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            "${files[0]}" \
+            "${files[1]}" \
+            "${files[2]}" \
+            "${files[3]}" \
+            "${files[4]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "$tag" \
+            --notes "Binary release ${RELEASE_VERSION} at ${SOURCE_SHA}. version.env is not modified."
+          meta=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url,tagName,assets,targetCommitish)
+          url=$(printf '%s\n' "$meta" | jq -er '.url')
+          count=$(printf '%s\n' "$meta" | jq -er '.assets | length')
+          got_tag=$(printf '%s\n' "$meta" | jq -er '.tagName')
+          names=$(printf '%s\n' "$meta" | jq -r '.assets[].name')
+          obj_type=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')
+          tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')
+          if [ "$obj_type" = "tag" ]; then
+            tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tagged}" --jq '.object.sha')
+          fi
+          test "$got_tag" = "$tag"
+          test "$tagged" = "$SOURCE_SHA"
+          case "$count" in
+            ''|*[!0-9]*)
+              echo "asset count is not numeric" >&2
+              exit 1
+              ;;
+          esac
+          test "$count" -ge 5
+          for required in \
+            "amazon_${RELEASE_VERSION}_darwin_amd64.tar.gz" \
+            "amazon_${RELEASE_VERSION}_darwin_arm64.tar.gz" \
+            "amazon_${RELEASE_VERSION}_linux_amd64.tar.gz" \
+            "amazon_${RELEASE_VERSION}_linux_arm64.tar.gz" \
+            checksums.txt
+          do
+            printf '%s\n' "$names" | grep -Fxq "$required"
+          done
+          {
+            printf 'tag=%s\n' "$got_tag"
+            printf 'release_url=%s\n' "$url"
+            printf 'asset_count=%s\n' "$count"
+          } >> "$GITHUB_OUTPUT"
+          printf 'published %s %s assets=%s\n' "$got_tag" "$url" "$count"

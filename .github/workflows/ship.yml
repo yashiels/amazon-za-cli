@@ -1,0 +1,64 @@
+name: "Deploy: Binary Release"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version X.Y.Z without a leading v
+        required: true
+        type: string
+        default: "0.1.0"
+      dry_run:
+        description: Skip GitHub release publication
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-release
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Require main branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require main branch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+
+  release:
+    name: Build release
+    needs: guard
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-impl.yml
+    with:
+      version: ${{ inputs.version }}
+      dry_run: ${{ inputs.dry_run }}
+      source_sha: ${{ github.sha }}
+
+  ship-complete:
+    name: Release complete
+    needs: [guard, release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Fail if any dependency failed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if printf '%s\n' "$NEEDS_JSON" | jq -e 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled")' >/dev/null; then
+            echo "A required job failed or was cancelled" >&2
+            exit 1
+          fi
