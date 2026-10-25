@@ -1,0 +1,14 @@
+{
+  "method": "GET",
+  "path": "/api/marketplaces/AE08WJ6YKNBMC/products/B0H471LF7H,B0H4727J8L,B06XWRRMYX,B000000000",
+  "query": "",
+  "signedHeaders": {
+    "Accept-Language": "en-ZA",
+    "Accept": "application/vnd.com.amazon.api+json; type=\"collection(product/v2)/v1\"; expand=\"title(product.offer.title/v1),buyingOptions[].price(product.price/v1),buyingOptions[].availability(product.availability/v2),customerReviewsSummary(product.customer-reviews-summary/v1)\"",
+    "X-Amzn-Session-Id": "700-6737453-1489661",
+    "X-Amzn-UBID": "525-3090256-7603447"
+  },
+  "time": "2026-10-25T11:41:21+0000",
+  "signature": "HmacSHA256 Time=2026-10-25T11:41:21+0000 SignedHeaders=accept;accept-language;x-amzn-session-id;x-amzn-ubid Signature=8dab86ce142f1aa0e52ab9eeaa399bbb72e9d831fe7439f6b166f2922668f113/6b1c8f11a75391923a7",
+  "status": 200
+}

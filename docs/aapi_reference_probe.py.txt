@@ -1,0 +1,80 @@
+import base64, hashlib, hmac, http.cookiejar, json, re, sys, time, urllib.request
+
+SRC = "/private/tmp/amazon-re-v3Qm/jadx_out/sources/"
+UA = "Amazon.com/32.19.0.100 (Android/14/Pixel 8)"
+MID = "AE08WJ6YKNBMC"
+ASCII = {"NUL": 0, "SOH": 1, "STX": 2, "ETX": 3, "EOT": 4, "ENQ": 5, "ACK": 6, "BEL": 7, "BS": 8, "HT": 9, "LF": 10, "VT": 11, "FF": 12, "CR": 13, "SO": 14, "SI": 15, "DLE": 16, "DC1": 17, "DC2": 18, "DC3": 19, "DC4": 20, "NAK": 21, "SYN": 22, "ETB": 23, "CAN": 24, "EM": 25, "SUB": 26, "ESC": 27, "FS": 28, "GS": 29, "RS": 30, "US": 31, "SP": 32, "DEL": 127}
+
+
+def java_bytes(s):
+    out = []
+    for tok in s.split(","):
+        tok = tok.strip()
+        if tok.startswith("Ascii."):
+            out.append(ASCII[tok[6:]])
+        else:
+            out.append(int(tok) & 0xFF)
+    return bytes(out)
+
+
+fez = open(SRC + "com/a9/fez/aapi/FezAAPICredentials.java").read()
+KEYS = {
+    "widget": ("9d343d8b188f34fbc27", base64.b64decode("<REDACTED>"), "HmacSHA1"),
+    "fez": (re.search(r'KEY = new String\("(\w+)"', fez).group(1), java_bytes(re.search(r"SECRET = new byte\[\]\{([^}]*)\}", fez).group(1)), "HmacSHA256"),
+}
+
+jar = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+opener.open(urllib.request.Request("https://www.amazon.co.za/", headers={"User-Agent": UA})).read()
+ck = {c.name: c.value for c in jar}
+sid = ck.get("session-id", "")
+ubid = next((v for k, v in ck.items() if k.startswith("ubid")), "")
+
+
+def sign(keyname, method, path, query, headers):
+    kid, secret, alg = KEYS[keyname]
+    t = time.strftime("%Y-%m-%dT%H:%M:%S+0000", time.gmtime())
+    s = f"{method}\n{t}\n{kid}\n{alg}\n{path}\n{query}\n"
+    names = sorted(k.lower() for k in headers)
+    low = {k.lower(): v for k, v in headers.items()}
+    for n in names:
+        s += f"{n}:{low[n]}\n"
+    sh = ";".join(names)
+    s += sh
+    dig = hashlib.sha1 if alg == "HmacSHA1" else hashlib.sha256
+    return f"{alg} Time={t} SignedHeaders={sh} Signature={hmac.new(secret, s.encode(), dig).hexdigest()}/{kid}"
+
+
+def get(keyname, path, typ, expands=(), query=""):
+    accept = f'application/vnd.com.amazon.api+json; type="{typ}"'
+    if expands:
+        accept += f'; expand="{",".join(expands)}"'
+    h = {"Accept-Language": "en-ZA", "Accept": accept, "X-Amzn-Session-Id": sid, "X-Amzn-UBID": ubid}
+    h["X-AAPI-Signature"] = sign(keyname, "GET", path, query, h)
+    h["User-Agent"] = UA
+    url = "https://data.amazon.co.za" + path + (("?" + query) if query else "")
+    try:
+        r = opener.open(urllib.request.Request(url, headers=h))
+        return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+if __name__ == "__main__":
+    asin = sys.argv[1] if len(sys.argv) > 1 else "B0H471LF7H"
+    EXP = ["title(product.offer.title/v1)", "buyingOptions[].price(product.price/v1)",
+           "buyingOptions[].availability(product.availability/v2)",
+           "customerReviewsSummary(product.customer-reviews-summary/v1)",
+           "byLine(product.by-line/v2)", "productImages(product.product-images/v2)",
+           "productOverview(product.product-overview/v2)",
+           "buyingOptions[].callToAction(product.call-to-action/v1)",
+           "productCategory(product.offer.product-category/v1)",
+           "buyingOptions[].delivery(product.delivery/v1)",
+           "buyingOptions[].dealDetails(product.deal-details/v1)"]
+    for kn in KEYS:
+        st, body = get(kn, f"/api/marketplaces/{MID}/products/{asin}", "product/v2", EXP)
+        open(f"/private/tmp/amazon-re-v3Qm/p_{kn}.json", "w").write(body)
+        allowed, denied = [], []
+        for m in re.finditer(r'"(\w+)":\{"resource":\{[^}]*\},"type":"([^"]+)"', body):
+            (denied if m.group(2) == "error/v1" else allowed).append(m.group(1))
+        print(kn, st, "ok:", sorted(set(allowed)), "403:", sorted(set(denied)))
